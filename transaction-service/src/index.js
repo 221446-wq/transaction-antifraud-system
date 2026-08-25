@@ -1,30 +1,7 @@
-const express = require('express');
+const app = require('./app');
 const env = require('./config/env');
-const transactionRoutes = require('./routes/transactionRoutes');
-const errorHandler = require('./middlewares/errorHandler');
 const { ensureConnected: ensureKafkaProducerConnected } = require('./kafka/producer');
 const { startFraudDecisionConsumer } = require('./events/fraudDecisionConsumer');
-
-const app = express();
-app.use(express.json());
-
-// Endpoint de salud básico: útil para confirmar que el servicio levantó
-// correctamente, antes de que existan los endpoints reales de negocio.
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'transaction-service' });
-});
-
-app.use(transactionRoutes);
-
-// Cualquier ruta no definida responde con el mismo formato JSON que el resto
-// de la API, en vez del HTML por defecto de Express.
-app.use((req, res) => {
-  res.status(404).json({
-    errors: [{ field: null, message: `Recurso no encontrado: ${req.method} ${req.originalUrl}.` }],
-  });
-});
-
-app.use(errorHandler);
 
 app.listen(env.port, () => {
   console.log(`transaction-service escuchando en el puerto ${env.port}`);
