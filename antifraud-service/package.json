@@ -1,0 +1,22 @@
+{
+  "name": "antifraud-service",
+  "version": "1.0.0",
+  "description": "",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "kafkajs": "^2.2.4",
+    "uuid": "^14.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
