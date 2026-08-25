@@ -86,4 +86,4 @@ async function startFraudDecisionConsumer() {
   await consumer.run({ eachMessage: handleMessage });
 }
 
-module.exports = { startFraudDecisionConsumer, TOPIC };
+module.exports = { startFraudDecisionConsumer, TOPIC, parseEvent, handleMessage };

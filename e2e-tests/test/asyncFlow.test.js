@@ -32,6 +32,7 @@ const DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/transactions
 let transactionServiceProcess;
 let antifraudServiceProcess;
 let spyConsumer;
+let testProducer;
 let pgClient;
 
 const receivedCreatedEvents = [];
@@ -65,6 +66,11 @@ before(async () => {
     },
   });
 
+  // Productor propio del test, para poder republicar un evento "a mano"
+  // (simular una redelivery real de Kafka) en el test de duplicados.
+  testProducer = kafka.producer();
+  await testProducer.connect();
+
   pgClient = new PgClient({ connectionString: DATABASE_URL });
   await pgClient.connect();
 
@@ -80,6 +86,7 @@ after(async () => {
     await pgClient.query('DELETE FROM transactions WHERE external_id = ANY($1)', [createdExternalIds]);
   }
   if (pgClient) await pgClient.end();
+  if (testProducer) await testProducer.disconnect();
   if (spyConsumer) await spyConsumer.disconnect();
   if (transactionServiceProcess) transactionServiceProcess.kill();
   if (antifraudServiceProcess) antifraudServiceProcess.kill();
@@ -148,4 +155,43 @@ test('flujo completo: una transacción de bajo monto termina en approved', async
 
 test('flujo completo: una transacción de monto alto termina en rejected', async () => {
   await runFullFlow({ value: 1500, expectedStatus: 'rejected' });
+});
+
+test('duplicados: republicar el mismo transaction.fraud-decision no cambia el resultado ni tumba el servicio', async () => {
+  // Dejamos que el flujo real se resuelva una vez, de punta a punta.
+  const created = await createTransaction(300);
+  createdExternalIds.push(created.transactionExternalId);
+  const { transactionExternalId } = created;
+
+  const decisionEvent = await waitForCondition(
+    () => receivedDecisionEvents.find((e) => e.data.transactionExternalId === transactionExternalId),
+    15000,
+  );
+  assert.equal(decisionEvent.data.status, 'approved');
+
+  await waitForCondition(async () => {
+    const tx = await fetchTransaction(transactionExternalId);
+    return tx.transactionStatus.name !== 'pending' ? tx : null;
+  }, 15000);
+
+  const resolved = await fetchTransaction(transactionExternalId);
+  assert.equal(resolved.transactionStatus.name, 'approved');
+
+  // Ahora republicamos EL MISMO evento (mismos eventId/bytes) directamente
+  // al tópico real, simulando una redelivery genuina de Kafka (at-least-
+  // once) en vez de simularla en memoria como en el test de idempotencia
+  // a nivel de servicio.
+  await testProducer.send({
+    topic: 'transaction.fraud-decision',
+    messages: [{ key: transactionExternalId, value: JSON.stringify(decisionEvent) }],
+  });
+
+  // Le damos margen al consumer real de transaction-service para
+  // procesarlo, y confirmamos que el servicio sigue vivo (no se cayó por
+  // el duplicado) y que el estado no cambió.
+  await sleep(3000);
+  await waitForHealth(`${TRANSACTION_SERVICE_URL}/health`, 5000);
+
+  const finalTransaction = await fetchTransaction(transactionExternalId);
+  assert.equal(finalTransaction.transactionStatus.name, 'approved');
 });
