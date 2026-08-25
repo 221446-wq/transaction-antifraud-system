@@ -1,6 +1,7 @@
 const express = require('express');
 const env = require('./config/env');
 const transactionRoutes = require('./routes/transactionRoutes');
+const { ensureConnected: ensureKafkaProducerConnected } = require('./kafka/producer');
 
 const app = express();
 app.use(express.json());
@@ -31,4 +32,11 @@ app.use((err, req, res, next) => {
 
 app.listen(env.port, () => {
   console.log(`transaction-service escuchando en el puerto ${env.port}`);
+});
+
+// Intento de conexión temprana al productor de Kafka: si el broker no está
+// disponible al arrancar, el servicio sigue levantando igual (se reintenta
+// de forma lazy en cada publish, ver src/kafka/producer.js).
+ensureKafkaProducerConnected().catch((err) => {
+  console.error('No se pudo conectar el productor de Kafka al arrancar', err);
 });
