@@ -1,4 +1,6 @@
 const { consumer } = require('../kafka/consumer');
+const { evaluateFraudRule } = require('../rules/fraudRule');
+const { publishFraudDecision } = require('./fraudDecisionPublisher');
 
 // Tópico definido en CONTRACT.md (Tarea 0): transaction-service lo publica
 // inmediatamente después de guardar la transacción como "pending".
@@ -35,9 +37,19 @@ async function handleMessage({ message }) {
     return;
   }
 
-  console.log('transaction.created recibido.', transaction);
-  // La regla antifraude y la publicación de transaction.fraud-decision se
-  // implementan en el siguiente ticket.
+  const status = evaluateFraudRule(transaction.value);
+
+  // No atrapamos errores de publish acá a propósito: si falla, dejamos que
+  // se propague para que este mensaje NO se dé por procesado (KafkaJS no
+  // confirma el offset) y se reintente más adelante. Como evaluateFraudRule
+  // es una función pura, reprocesar el mismo mensaje produce la misma
+  // decisión, así que reintentar es seguro.
+  await publishFraudDecision({
+    transactionExternalId: transaction.transactionExternalId,
+    status,
+  });
+
+  console.log('Decisión antifraude publicada.', { ...transaction, status });
 }
 
 function sleep(ms) {
