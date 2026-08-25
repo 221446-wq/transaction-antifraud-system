@@ -24,8 +24,14 @@ function parseEvent(rawValue) {
   return { transactionExternalId, value };
 }
 
-async function handleMessage({ message }) {
+async function handleMessage({ topic, partition, message }) {
   const rawValue = message.value ? message.value.toString('utf8') : null;
+
+  console.log('Mensaje de transaction.created recibido.', {
+    topic,
+    partition,
+    offset: message.offset,
+  });
 
   // Mensaje mal formado o fuera de contrato: no tiene sentido reintentarlo
   // indefinidamente, se descarta y se deja registro.
@@ -40,7 +46,18 @@ async function handleMessage({ message }) {
     return;
   }
 
+  console.log('Transacción extraída del evento.', {
+    transactionExternalId: transaction.transactionExternalId,
+    value: transaction.value,
+  });
+
   const status = evaluateFraudRule(transaction.value);
+
+  console.log('Decisión antifraude tomada.', {
+    transactionExternalId: transaction.transactionExternalId,
+    value: transaction.value,
+    status,
+  });
 
   // Reintenta la publicación con backoff (fallos temporales de Kafka no
   // deberían perder una decisión). Si aun así se agotan los reintentos, se
@@ -65,7 +82,10 @@ async function handleMessage({ message }) {
     return;
   }
 
-  console.log('Decisión antifraude publicada.', { ...transaction, status });
+  console.log('transaction.fraud-decision publicado.', {
+    transactionExternalId: transaction.transactionExternalId,
+    status,
+  });
 }
 
 /**
