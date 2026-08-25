@@ -2,6 +2,7 @@ const express = require('express');
 const env = require('./config/env');
 const transactionRoutes = require('./routes/transactionRoutes');
 const { ensureConnected: ensureKafkaProducerConnected } = require('./kafka/producer');
+const { startFraudDecisionConsumer } = require('./events/fraudDecisionConsumer');
 
 const app = express();
 app.use(express.json());
@@ -39,4 +40,10 @@ app.listen(env.port, () => {
 // de forma lazy en cada publish, ver src/kafka/producer.js).
 ensureKafkaProducerConnected().catch((err) => {
   console.error('No se pudo conectar el productor de Kafka al arrancar', err);
+});
+
+// El consumer de decisiones antifraude corre en segundo plano: si falla acá,
+// se loguea pero no se tumba el servicio HTTP.
+startFraudDecisionConsumer().catch((err) => {
+  console.error('El consumer de transaction.fraud-decision se detuvo inesperadamente', err);
 });
