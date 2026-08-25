@@ -1,6 +1,9 @@
 const { consumer } = require('../kafka/consumer');
 const { evaluateFraudRule } = require('../rules/fraudRule');
 const { publishFraudDecision } = require('./fraudDecisionPublisher');
+const { withRetry, sleep } = require('../utils/retry');
+
+const PUBLISH_RETRY_OPTIONS = { retries: 3, initialDelayMs: 200, factor: 2 };
 
 // Tópico definido en CONTRACT.md (Tarea 0): transaction-service lo publica
 // inmediatamente después de guardar la transacción como "pending".
@@ -39,21 +42,30 @@ async function handleMessage({ message }) {
 
   const status = evaluateFraudRule(transaction.value);
 
-  // No atrapamos errores de publish acá a propósito: si falla, dejamos que
-  // se propague para que este mensaje NO se dé por procesado (KafkaJS no
-  // confirma el offset) y se reintente más adelante. Como evaluateFraudRule
-  // es una función pura, reprocesar el mismo mensaje produce la misma
-  // decisión, así que reintentar es seguro.
-  await publishFraudDecision({
-    transactionExternalId: transaction.transactionExternalId,
-    status,
-  });
+  // Reintenta la publicación con backoff (fallos temporales de Kafka no
+  // deberían perder una decisión). Si aun así se agotan los reintentos, se
+  // registra como error definitivo y se sigue con el próximo mensaje: un
+  // fallo persistente en una transacción puntual no debe trabar el resto
+  // del procesamiento del consumer.
+  try {
+    await withRetry(
+      () => publishFraudDecision({
+        transactionExternalId: transaction.transactionExternalId,
+        status,
+      }),
+      PUBLISH_RETRY_OPTIONS,
+    );
+  } catch (err) {
+    console.error('Error definitivo: no se pudo publicar la decisión antifraude tras agotar los reintentos.', {
+      transactionExternalId: transaction.transactionExternalId,
+      status,
+      retries: PUBLISH_RETRY_OPTIONS.retries,
+      error: err.message,
+    });
+    return;
+  }
 
   console.log('Decisión antifraude publicada.', { ...transaction, status });
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
