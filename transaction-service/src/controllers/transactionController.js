@@ -1,3 +1,4 @@
+const { validate: isUuid } = require('uuid');
 const prisma = require('../db/prismaClient');
 const { validateCreateTransactionInput } = require('../validators/transactionValidator');
 const { serializeTransaction } = require('../serializers/transactionSerializer');
@@ -40,4 +41,34 @@ async function createTransaction(req, res, next) {
   }
 }
 
-module.exports = { createTransaction };
+async function getTransaction(req, res, next) {
+  try {
+    const { externalId } = req.params;
+
+    // Un external_id con formato inválido nunca va a matchear ninguna fila;
+    // se resuelve como 404 en vez de dejar que Postgres rechace el UUID mal
+    // formado con un error de sintaxis (que devolvería un 500 confuso).
+    if (!isUuid(externalId)) {
+      return res.status(404).json({
+        errors: [{ field: 'externalId', message: `No se encontró una transacción con id ${externalId}.` }],
+      });
+    }
+
+    const transaction = await prisma.transaction.findUnique({
+      where: { externalId },
+      include: { transferType: true },
+    });
+
+    if (!transaction) {
+      return res.status(404).json({
+        errors: [{ field: 'externalId', message: `No se encontró una transacción con id ${externalId}.` }],
+      });
+    }
+
+    return res.status(200).json(serializeTransaction(transaction));
+  } catch (err) {
+    return next(err);
+  }
+}
+
+module.exports = { createTransaction, getTransaction };
