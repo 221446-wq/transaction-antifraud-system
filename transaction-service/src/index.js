@@ -1,6 +1,7 @@
 const express = require('express');
 const env = require('./config/env');
 const transactionRoutes = require('./routes/transactionRoutes');
+const errorHandler = require('./middlewares/errorHandler');
 const { ensureConnected: ensureKafkaProducerConnected } = require('./kafka/producer');
 const { startFraudDecisionConsumer } = require('./events/fraudDecisionConsumer');
 
@@ -15,21 +16,15 @@ app.get('/health', (req, res) => {
 
 app.use(transactionRoutes);
 
-// Body JSON malformado: express.json() lanza un SyntaxError antes de llegar
-// a las rutas, se traduce a un 400 en vez del 500 genérico de Express.
-app.use((err, req, res, next) => {
-  if (err.type === 'entity.parse.failed') {
-    return res.status(400).json({
-      errors: [{ field: 'body', message: 'El cuerpo de la petición debe ser JSON válido.' }],
-    });
-  }
-  return next(err);
+// Cualquier ruta no definida responde con el mismo formato JSON que el resto
+// de la API, en vez del HTML por defecto de Express.
+app.use((req, res) => {
+  res.status(404).json({
+    errors: [{ field: null, message: `Recurso no encontrado: ${req.method} ${req.originalUrl}.` }],
+  });
 });
 
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ errors: [{ field: null, message: 'Error interno del servidor.' }] });
-});
+app.use(errorHandler);
 
 app.listen(env.port, () => {
   console.log(`transaction-service escuchando en el puerto ${env.port}`);
