@@ -3,8 +3,10 @@
 Sistema de dos servicios independientes (`transaction-service` y
 `antifraud-service`) que se comunican de forma asíncrona por Kafka. El
 contrato de eventos entre ambos está documentado en [CONTRACT.md](./CONTRACT.md),
-y el razonamiento detrás de las decisiones técnicas y las asunciones sobre
-requisitos no especificados está en [DECISIONS.md](./DECISIONS.md).
+el razonamiento detrás de las decisiones técnicas y las asunciones sobre
+requisitos no especificados está en [DECISIONS.md](./DECISIONS.md), y un
+inventario honesto de lo que falta o se simplificó está en
+[LIMITATIONS.md](./LIMITATIONS.md).
 
 Esta guía asume que **no tenés nada instalado todavía** más que Node.js y
 Docker, y te lleva paso a paso hasta tener el sistema completo corriendo en tu
