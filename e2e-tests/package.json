@@ -1,0 +1,13 @@
+{
+  "name": "e2e-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pruebas end-to-end del flujo asíncrono completo: transaction-service + antifraud-service comunicándose por Kafka real.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "kafkajs": "^2.2.4",
+    "pg": "^8.23.0"
+  }
+}
