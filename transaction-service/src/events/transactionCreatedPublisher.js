@@ -1,16 +1,17 @@
 const { v4: uuidv4 } = require('uuid');
-const { producer, ensureConnected } = require('../kafka/producer');
 
 const TOPIC = 'transaction.created';
 
 /**
- * Publica el evento transaction.created respetando el envelope y el payload
- * definidos en CONTRACT.md. La key del mensaje es el transactionExternalId,
- * para que todos los eventos de una misma transacción caigan en la misma
- * partición.
+ * Construye el envelope de transaction.created (ver CONTRACT.md) a partir de
+ * la fila recién creada. Es una función pura, sin efectos secundarios: la
+ * publicación real a Kafka ya no ocurre acá, sino en el relay del outbox
+ * (ver src/outbox/outboxRelay.js) a partir de lo que esta función guarda en
+ * la tabla `outbox_events` dentro de la misma transacción de Postgres que el
+ * INSERT de negocio — ver DECISIONS.md, sección "Patrón Outbox".
  */
-async function publishTransactionCreated(transaction) {
-  const event = {
+function buildTransactionCreatedEvent(transaction) {
+  return {
     eventId: uuidv4(),
     eventType: TOPIC,
     occurredAt: new Date().toISOString(),
@@ -19,17 +20,6 @@ async function publishTransactionCreated(transaction) {
       value: Number(transaction.value),
     },
   };
-
-  await ensureConnected();
-  await producer.send({
-    topic: TOPIC,
-    messages: [
-      {
-        key: event.data.transactionExternalId,
-        value: JSON.stringify(event),
-      },
-    ],
-  });
 }
 
-module.exports = { publishTransactionCreated, TOPIC };
+module.exports = { buildTransactionCreatedEvent, TOPIC };

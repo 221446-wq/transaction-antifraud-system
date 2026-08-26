@@ -1,13 +1,22 @@
 const { consumer } = require('../kafka/consumer');
 const { evaluateFraudRule } = require('../rules/fraudRule');
-const { publishFraudDecision } = require('./fraudDecisionPublisher');
 const { withRetry, sleep } = require('../utils/retry');
+const logger = require('../logger');
+const metrics = require('../metrics');
+// Namespace, no desestructurados: los tests monkey-patchean
+// `fraudDecisionPublisher.publishFraudDecision`/`dlq.publishToDlq` para
+// simular fallos de Kafka sin un broker real (ver
+// test/transactionCreatedConsumer.test.js).
+const fraudDecisionPublisher = require('./fraudDecisionPublisher');
+const dlq = require('../kafka/dlq');
 
 const PUBLISH_RETRY_OPTIONS = { retries: 3, initialDelayMs: 200, factor: 2 };
 
 // Tópico definido en CONTRACT.md (Tarea 0): transaction-service lo publica
 // inmediatamente después de guardar la transacción como "pending".
 const TOPIC = 'transaction.created';
+
+let consumerConnected = false;
 
 function parseEvent(rawValue) {
   const event = JSON.parse(rawValue);
@@ -27,65 +36,57 @@ function parseEvent(rawValue) {
 async function handleMessage({ topic, partition, message }) {
   const rawValue = message.value ? message.value.toString('utf8') : null;
 
-  console.log('Mensaje de transaction.created recibido.', {
-    topic,
-    partition,
-    offset: message.offset,
-  });
+  logger.debug({ topic, partition, offset: message.offset }, 'Mensaje de transaction.created recibido.');
 
   // Mensaje mal formado o fuera de contrato: no tiene sentido reintentarlo
-  // indefinidamente, se descarta y se deja registro.
+  // indefinidamente, se descarta a una DLQ y se deja registro.
   let transaction;
   try {
     transaction = parseEvent(rawValue);
   } catch (err) {
-    console.error('Evento de transaction.created inválido, se descarta.', {
-      error: err.message,
-      rawValue,
-    });
+    logger.error({ error: err.message, rawValue }, 'transaction.created inválido, se descarta a la DLQ.');
+    await dlq.publishToDlq({ originalTopic: TOPIC, reason: 'invalid_event', error: err.message, rawValue });
     return;
   }
 
-  console.log('Transacción extraída del evento.', {
-    transactionExternalId: transaction.transactionExternalId,
-    value: transaction.value,
-  });
-
   const status = evaluateFraudRule(transaction.value);
+  metrics.transactionsEvaluatedTotal.inc({ status });
 
-  console.log('Decisión antifraude tomada.', {
-    transactionExternalId: transaction.transactionExternalId,
-    value: transaction.value,
-    status,
-  });
+  logger.info(
+    { transactionExternalId: transaction.transactionExternalId, value: transaction.value, status },
+    'Decisión antifraude tomada.',
+  );
 
   // Reintenta la publicación con backoff (fallos temporales de Kafka no
   // deberían perder una decisión). Si aun así se agotan los reintentos, se
-  // registra como error definitivo y se sigue con el próximo mensaje: un
-  // fallo persistente en una transacción puntual no debe trabar el resto
-  // del procesamiento del consumer.
+  // manda a la DLQ y se sigue con el próximo mensaje: un fallo persistente
+  // en una transacción puntual no debe trabar el resto del procesamiento
+  // del consumer.
   try {
     await withRetry(
-      () => publishFraudDecision({
+      () => fraudDecisionPublisher.publishFraudDecision({
         transactionExternalId: transaction.transactionExternalId,
         status,
       }),
       PUBLISH_RETRY_OPTIONS,
     );
   } catch (err) {
-    console.error('Error definitivo: no se pudo publicar la decisión antifraude tras agotar los reintentos.', {
-      transactionExternalId: transaction.transactionExternalId,
-      status,
-      retries: PUBLISH_RETRY_OPTIONS.retries,
+    metrics.fraudDecisionPublishErrorsTotal.inc();
+    logger.error(
+      { transactionExternalId: transaction.transactionExternalId, status, retries: PUBLISH_RETRY_OPTIONS.retries, error: err.message },
+      'Error definitivo: no se pudo publicar la decisión antifraude tras agotar los reintentos, se envía a la DLQ.',
+    );
+    await dlq.publishToDlq({
+      originalTopic: 'transaction.fraud-decision',
+      reason: 'publish_retries_exhausted',
       error: err.message,
+      event: { transactionExternalId: transaction.transactionExternalId, status },
+      key: transaction.transactionExternalId,
     });
     return;
   }
 
-  console.log('transaction.fraud-decision publicado.', {
-    transactionExternalId: transaction.transactionExternalId,
-    status,
-  });
+  logger.info({ transactionExternalId: transaction.transactionExternalId, status }, 'transaction.fraud-decision publicado.');
 }
 
 /**
@@ -98,12 +99,11 @@ async function connectWithRetry(retryDelayMs = 5000) {
   for (;;) {
     try {
       await consumer.connect();
+      consumerConnected = true;
       return;
     } catch (err) {
-      console.error(
-        `No se pudo conectar el consumer de ${TOPIC}, reintentando en ${retryDelayMs}ms.`,
-        err.message,
-      );
+      consumerConnected = false;
+      logger.error({ error: err.message, retryDelayMs }, `No se pudo conectar el consumer de ${TOPIC}, reintentando.`);
       await sleep(retryDelayMs);
     }
   }
@@ -115,4 +115,14 @@ async function startTransactionCreatedConsumer() {
   await consumer.run({ eachMessage: handleMessage });
 }
 
-module.exports = { startTransactionCreatedConsumer, TOPIC, parseEvent, handleMessage };
+function isConsumerConnected() {
+  return consumerConnected;
+}
+
+module.exports = {
+  startTransactionCreatedConsumer,
+  TOPIC,
+  parseEvent,
+  handleMessage,
+  isConsumerConnected,
+};

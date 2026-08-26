@@ -1,4 +1,5 @@
 const AppError = require('../errors/AppError');
+const logger = require('../logger');
 
 /**
  * Punto único de traducción de errores a respuestas HTTP. Todo error termina
@@ -18,7 +19,7 @@ function errorHandler(err, req, res, next) { // eslint-disable-line no-unused-va
     return res.status(err.statusCode).json({ errors: err.errors });
   }
 
-  console.error(err);
+  logger.error({ error: err.message, stack: err.stack }, 'Error no manejado en un request HTTP');
   return res.status(500).json({
     errors: [{ field: null, message: 'Error interno del servidor.' }],
   });

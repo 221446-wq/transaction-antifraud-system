@@ -1,5 +1,7 @@
 const { consumer } = require('../kafka/consumer');
 const { applyFraudDecision, VALID_DECISION_STATUSES } = require('../services/fraudDecisionService');
+const { publishToDlq } = require('../kafka/dlq');
+const logger = require('../logger');
 
 const TOPIC = 'transaction.fraud-decision';
 
@@ -22,12 +24,15 @@ async function handleMessage({ message }) {
   const rawValue = message.value ? message.value.toString('utf8') : null;
 
   // Mensaje mal formado o con datos fuera de contrato: no tiene sentido
-  // reintentarlo indefinidamente, se descarta y se deja registro.
+  // reintentarlo indefinidamente, se descarta a una DLQ y se deja registro.
   let decision;
   try {
     decision = parseEvent(rawValue);
   } catch (err) {
-    console.error('Evento de transaction.fraud-decision inválido, se descarta.', {
+    logger.error({ error: err.message, rawValue }, 'transaction.fraud-decision inválido, se descarta a la DLQ.');
+    await publishToDlq({
+      originalTopic: TOPIC,
+      reason: 'invalid_event',
       error: err.message,
       rawValue,
     });
@@ -38,20 +43,17 @@ async function handleMessage({ message }) {
 
   if (!result.applied) {
     if (result.reason === 'not_found') {
-      console.error(
-        'transaction.fraud-decision referencia una transacción que no existe.',
-        decision,
-      );
+      logger.error(decision, 'transaction.fraud-decision referencia una transacción que no existe.');
     } else {
-      console.log(
-        'transaction.fraud-decision ignorado: la transacción ya tenía un estado definitivo (evento duplicado o fuera de orden).',
+      logger.info(
         { ...decision, currentStatus: result.currentStatus },
+        'transaction.fraud-decision ignorado: la transacción ya tenía un estado definitivo (evento duplicado o fuera de orden).',
       );
     }
     return;
   }
 
-  console.log('Transacción actualizada por decisión antifraude.', decision);
+  logger.info(decision, 'Transacción actualizada por decisión antifraude.');
 }
 
 function sleep(ms) {
@@ -71,10 +73,7 @@ async function connectWithRetry(retryDelayMs = 5000) {
       await consumer.connect();
       return;
     } catch (err) {
-      console.error(
-        `No se pudo conectar el consumer de ${TOPIC}, reintentando en ${retryDelayMs}ms.`,
-        err.message,
-      );
+      logger.error({ error: err.message, retryDelayMs }, `No se pudo conectar el consumer de ${TOPIC}, reintentando.`);
       await sleep(retryDelayMs);
     }
   }

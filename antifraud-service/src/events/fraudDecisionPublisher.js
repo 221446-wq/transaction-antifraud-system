@@ -1,5 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
-const { producer, ensureConnected } = require('../kafka/producer');
+const { publishEvent } = require('../kafka/publishEvent');
 
 // Tópico y estructura definidos en CONTRACT.md (Tarea 0).
 const TOPIC = 'transaction.fraud-decision';
@@ -25,16 +25,7 @@ async function publishFraudDecision({ transactionExternalId, status }) {
     data: { transactionExternalId, status },
   };
 
-  await ensureConnected();
-  await producer.send({
-    topic: TOPIC,
-    messages: [
-      {
-        key: transactionExternalId,
-        value: JSON.stringify(event),
-      },
-    ],
-  });
+  await publishEvent({ topic: TOPIC, key: transactionExternalId, event });
 }
 
 module.exports = { publishFraudDecision, TOPIC, VALID_STATUSES };

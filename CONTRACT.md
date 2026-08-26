@@ -4,6 +4,12 @@ Este documento es la fuente única de verdad sobre cómo se comunican ambos
 servicios a través de Kafka. Cualquier cambio a esta estructura debe
 reflejarse en ambos servicios al mismo tiempo.
 
+`reference-data-service` (extensión opcional, ver docs/WEB_SCRAPING.md) está
+fuera del alcance de este documento a propósito: no publica ni consume
+ningún tópico de Kafka, y no comparte base de datos de negocio con estos dos
+servicios — es un worker independiente sin ningún acoplamiento con el
+contrato de abajo.
+
 ## Tópicos
 
 | Tópico                        | Productor            | Consumidor           |
@@ -83,6 +89,55 @@ Publicado por **antifraud-service** después de evaluar la regla de negocio.
 |-----------------------------|--------|-------------|------------------------------------------------------------|
 | `transactionExternalId`     | UUID   | Sí          | Debe coincidir con el de `transaction.created`.            |
 | `status`                    | string | Sí          | Únicamente `"approved"` o `"rejected"`. Nunca `"pending"`. |
+
+## Tópicos dead-letter (DLQ)
+
+Extensión opcional de "entrega de eventos más robusta" (ver README.md). Cada
+tópico de negocio tiene un tópico dead-letter homónimo con el sufijo `.dlq`:
+
+| Tópico de negocio             | Tópico DLQ                          |
+|--------------------------------|--------------------------------------|
+| `transaction.created`          | `transaction.created.dlq`           |
+| `transaction.fraud-decision`   | `transaction.fraud-decision.dlq`    |
+
+Un mensaje termina en la DLQ correspondiente en dos casos:
+
+1. **Parseo inválido**: el consumer no pudo extraer los campos esperados del
+   mensaje (JSON inválido, o le faltan campos requeridos por el contrato).
+2. **Reintentos de publicación agotados**: quien iba a publicar el evento
+   (el relay del outbox para `transaction.created`, o `antifraud-service`
+   para `transaction.fraud-decision`) no pudo hacerlo tras varios intentos
+   con backoff.
+
+Formato del mensaje en la DLQ (mismo envelope, con su propio `data`):
+
+```json
+{
+  "eventId": "b1c2d3e4-...",
+  "eventType": "transaction.fraud-decision.dlq",
+  "occurredAt": "2026-01-15T13:45:32.000Z",
+  "data": {
+    "originalTopic": "transaction.fraud-decision",
+    "reason": "invalid_event",
+    "error": "El evento no trae un data.transactionExternalId válido.",
+    "event": { "...": "el evento original ya parseado, si se llegó a construir" },
+    "rawValue": "el string crudo del mensaje, si el parseo fue lo que falló"
+  }
+}
+```
+
+| Campo (`data`)  | Descripción                                                          |
+|------------------|-----------------------------------------------------------------------|
+| `originalTopic`  | Tópico de negocio del que vino el mensaje.                            |
+| `reason`         | `invalid_event` \| `outbox_max_attempts_exceeded` \| `publish_retries_exhausted`. |
+| `error`          | Mensaje del último error.                                             |
+| `event`          | El evento ya parseado/decidido, cuando existe (p.ej. la decisión que no se pudo publicar). `null` si no aplica. |
+| `rawValue`       | Los bytes crudos del mensaje original, cuando el fallo fue de parseo. `null` si no aplica. |
+
+La DLQ es **solo de inspección** en este proyecto: nada la consume ni
+reprocesa automáticamente (ver LIMITATIONS.md). Reprocesar un mensaje hoy es
+un paso manual: leerlo de la DLQ y republicarlo a mano en el tópico
+original.
 
 ## Reglas que ambos servicios deben respetar
 

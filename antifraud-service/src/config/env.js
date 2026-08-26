@@ -18,6 +18,11 @@ const env = {
   kafkaBrokers: required('KAFKA_BROKERS').split(','),
   kafkaClientId: process.env.KAFKA_CLIENT_ID || 'antifraud-service',
   kafkaConsumerGroupId: process.env.KAFKA_CONSUMER_GROUP_ID || 'antifraud-service',
+  // Puerto de un servidor HTTP mínimo, solo para /health y /metrics — el
+  // servicio no expone ningún endpoint de negocio (ver CONTRACT.md: es
+  // sin estado, solo consume/produce Kafka). Antes no exponía ningún
+  // puerto; ver DECISIONS.md, "Observabilidad".
+  port: process.env.PORT || 3001,
 };
 
 module.exports = env;

@@ -1,12 +1,17 @@
 # Reto backend — Transacciones + Antifraude
 
-Sistema de dos servicios independientes (`transaction-service` y
-`antifraud-service`) que se comunican de forma asíncrona por Kafka. El
-contrato de eventos entre ambos está documentado en [CONTRACT.md](./CONTRACT.md),
+Sistema de tres servicios independientes: `transaction-service` y
+`antifraud-service` (el núcleo del reto, comunicados de forma asíncrona por
+Kafka) y `reference-data-service` (extensión opcional de recolección de
+datos de referencia, sin relación con el flujo de negocio). El contrato de
+eventos entre los dos primeros está documentado en [CONTRACT.md](./CONTRACT.md),
 el razonamiento detrás de las decisiones técnicas y las asunciones sobre
-requisitos no especificados está en [DECISIONS.md](./DECISIONS.md), y un
+requisitos no especificados está en [DECISIONS.md](./DECISIONS.md), un
 inventario honesto de lo que falta o se simplificó está en
-[LIMITATIONS.md](./LIMITATIONS.md).
+[LIMITATIONS.md](./LIMITATIONS.md), y las extensiones opcionales implementadas
+tienen su propia nota de diseño en [docs/HIGH_VOLUME.md](./docs/HIGH_VOLUME.md)
+(alto volumen) y [docs/WEB_SCRAPING.md](./docs/WEB_SCRAPING.md) (recolección de
+datos de referencia).
 
 Esta guía asume que **no tenés nada instalado todavía** más que Node.js y
 Docker, y te lleva paso a paso hasta tener el sistema completo corriendo en tu
@@ -56,25 +61,34 @@ con el `docker-compose.yml` de arriba. Copiálo a `.env` en cada uno:
 # Bash / Git Bash
 cp transaction-service/.env.example transaction-service/.env
 cp antifraud-service/.env.example antifraud-service/.env
+cp reference-data-service/.env.example reference-data-service/.env
 ```
 
 ```powershell
 # PowerShell
 Copy-Item transaction-service\.env.example transaction-service\.env
 Copy-Item antifraud-service\.env.example antifraud-service\.env
+Copy-Item reference-data-service\.env.example reference-data-service\.env
 ```
 
 No hace falta editar nada para correr todo localmente con el
 `docker-compose.yml` incluido — los valores por defecto ya apuntan a
 `localhost:5432` y `localhost:9092`.
 
-| Variable                  | Servicio            | Qué es |
-|----------------------------|---------------------|--------|
-| `PORT`                     | transaction-service | Puerto HTTP del servicio (default `3000`). |
-| `DATABASE_URL`             | transaction-service | Cadena de conexión a PostgreSQL. |
-| `KAFKA_BROKERS`            | ambos                | Broker(s) de Kafka, separados por coma. |
-| `KAFKA_CLIENT_ID`          | ambos                | Identificador del servicio ante Kafka (solo informativo/logs). |
-| `KAFKA_CONSUMER_GROUP_ID`  | antifraud-service    | Consumer group del consumer de `transaction.created`. |
+| Variable                  | Servicio                | Qué es |
+|----------------------------|-------------------------|--------|
+| `PORT`                     | transaction-service     | Puerto HTTP del servicio (default `3000`). |
+| `DATABASE_URL`             | transaction-service, reference-data-service | Cadena de conexión a PostgreSQL. |
+| `KAFKA_BROKERS`            | transaction-service, antifraud-service | Broker(s) de Kafka, separados por coma. |
+| `KAFKA_CLIENT_ID`          | transaction-service, antifraud-service | Identificador del servicio ante Kafka (solo informativo/logs). |
+| `KAFKA_CONSUMER_GROUP_ID`  | antifraud-service        | Consumer group del consumer de `transaction.created`. |
+| `PORT`                     | antifraud-service        | Puerto de su servidor HTTP mínimo (default `3001`), solo para `/health` y `/metrics` — no expone endpoints de negocio. |
+| `DATABASE_POOL_MAX`        | transaction-service      | Tamaño del pool de conexiones a Postgres. Ver [docs/HIGH_VOLUME.md](./docs/HIGH_VOLUME.md). |
+| `OUTBOX_*`                 | transaction-service      | Tuning del relay del outbox (ver `.env.example` y DECISIONS.md). |
+| `LOG_LEVEL` / `LOG_PRETTY` | los tres                 | Nivel de log y formato legible en desarrollo (pino). |
+| `SOURCE_URL`               | reference-data-service   | Página HTML pública de la que se recolectan tasas de cambio. |
+| `PORT`                     | reference-data-service   | Puerto de su servidor HTTP (default `3002`): `/health`, `/metrics`, `/reference-rates`. |
+| `POLL_INTERVAL_MS`, `FETCH_*`, `MIN_INTERVAL_PER_HOST_MS` | reference-data-service | Tuning de la recolección (ver `.env.example` y docs/WEB_SCRAPING.md). |
 
 ## 3. Instalar dependencias — `transaction-service`
 
@@ -112,10 +126,23 @@ npm install
 Este servicio no usa base de datos (es sin estado, ver
 [CONTRACT.md](./CONTRACT.md)), así que no tiene un paso de migraciones.
 
-## 6. Iniciar ambos servicios
+## 5.1. Instalar dependencias y migrar — `reference-data-service` (opcional)
 
-Cada servicio corre en su propio proceso — necesitás **dos terminales**
-abiertas, una por servicio.
+Servicio independiente de la extensión opcional de recolección de datos de
+referencia (ver [docs/WEB_SCRAPING.md](./docs/WEB_SCRAPING.md)). No participa
+del flujo de transacciones/antifraude — es seguro saltarse este paso si solo
+te interesa el núcleo del reto.
+
+```bash
+cd reference-data-service
+npm install
+npm run migrate   # crea reference_rate_sources y reference_rates en la misma base
+```
+
+## 6. Iniciar los servicios
+
+Cada servicio corre en su propio proceso — necesitás una terminal por
+servicio (dos para el núcleo del reto, tres si sumás la extensión opcional).
 
 **Terminal 1 — transaction-service:**
 
@@ -130,6 +157,16 @@ Deberías ver `transaction-service escuchando en el puerto 3000`. Probalo con:
 curl http://localhost:3000/health
 ```
 
+Además de `POST /transactions` y `GET /transactions/:externalId` (ver más
+abajo), expone:
+
+| Endpoint          | Qué es |
+|-------------------|--------|
+| `GET /health/live`  | Liveness: el proceso está vivo. |
+| `GET /health/ready` | Readiness: chequea Postgres y el productor de Kafka. `503` si alguno falla. |
+| `GET /metrics`      | Métricas Prometheus (transacciones creadas, decisiones aplicadas, eventos pendientes en el outbox, etc.). |
+| `POST /graphql`     | GraphQL además de REST — misma capa de servicio, ver [CONTRACT.md](./CONTRACT.md). Abrí esa URL en el navegador para la UI interactiva (GraphiQL). |
+
 **Terminal 2 — antifraud-service:**
 
 ```bash
@@ -137,10 +174,26 @@ cd antifraud-service
 npm start
 ```
 
-Deberías ver `antifraud-service inicializado (...)`. Este servicio no expone
-HTTP: solo vas a ver actividad en sus logs cuando procese eventos.
+Deberías ver `antifraud-service inicializado (...)`. No expone ningún
+endpoint de negocio (es sin estado, ver CONTRACT.md); su servidor HTTP es
+solo `GET /health/live`, `GET /health/ready` y `GET /metrics` en el puerto
+`3001`.
 
-> Para desarrollo, `npm run dev` en cualquiera de los dos usa `nodemon` y
+**Terminal 3 — reference-data-service (opcional):**
+
+```bash
+cd reference-data-service
+npm start
+```
+
+Recolecta tasas de cambio de referencia del BCE cada `POLL_INTERVAL_MS`
+(default 30 min; corre una vez de inmediato al arrancar). Probalo con:
+
+```bash
+curl http://localhost:3002/reference-rates/usd
+```
+
+> Para desarrollo, `npm run dev` en cualquiera de los tres usa `nodemon` y
 > reinicia solo ante cambios de código.
 
 ### Probar el flujo manualmente
@@ -170,7 +223,7 @@ Con `value: 120` (≤ 1000) el estado final debería ser `approved`; con un
 
 ## 7. Ejecutar los tests
 
-Hay tres suites independientes:
+Hay cuatro suites independientes:
 
 **`transaction-service`** (necesita Postgres arriba; Kafka es opcional — si
 no está disponible, los tests igual pasan porque el servicio está diseñado
@@ -182,10 +235,21 @@ npm test
 ```
 
 **`antifraud-service`** (no necesita nada levantado — son pruebas puras de
-la regla de negocio y del helper de reintentos):
+la regla de negocio, el helper de reintentos, y el consumer con Kafka
+mockeado):
 
 ```bash
 cd antifraud-service
+npm test
+```
+
+**`reference-data-service`** (necesita Postgres arriba; no hace ninguna
+request de red real — los tests de scraping usan HTML guardado en
+`test/fixtures/`, ver [docs/WEB_SCRAPING.md](./docs/WEB_SCRAPING.md)):
+
+```bash
+cd reference-data-service
+npm run migrate   # si todavía no lo corriste
 npm test
 ```
 
@@ -201,6 +265,19 @@ npm install
 npm test
 ```
 
+## 8. Prueba de carga (opcional)
+
+Con `transaction-service` corriendo (Postgres arriba; Kafka no hace falta):
+
+```bash
+cd transaction-service
+npm run load-test
+```
+
+Corre una carga de escritura, lectura y mixta con `autocannon` y muestra
+requests/seg y latencia p50/p99. Ver [docs/HIGH_VOLUME.md](./docs/HIGH_VOLUME.md)
+para cómo interpretar los resultados y qué palancas ajustar.
+
 ## Solución de problemas comunes
 
 - **`Error: Falta la variable de entorno obligatoria: DATABASE_URL`** — no
@@ -214,15 +291,28 @@ npm test
   la suite end-to-end.
 - **Una transacción se queda en `pending` para siempre** — confirmá que
   `antifraud-service` esté efectivamente corriendo y que ambos servicios
-  tengan `KAFKA_BROKERS=localhost:9092` en su `.env`.
+  tengan `KAFKA_BROKERS=localhost:9092` en su `.env`. También revisá
+  `GET /metrics` en `transaction-service` (`outbox_pending_events`): si ese
+  número no baja, el relay del outbox no está pudiendo publicar — ver
+  DECISIONS.md, "Patrón Outbox".
+- **Un evento "desapareció"** — revisá los tópicos `transaction.created.dlq`
+  y `transaction.fraud-decision.dlq`: un mensaje mal formado, o una
+  publicación que agotó sus reintentos, termina ahí en vez de perderse en
+  silencio (ver CONTRACT.md).
 
 ## Estructura del repositorio
 
 ```
 .
-├── CONTRACT.md            # Contrato de eventos entre ambos servicios
-├── docker-compose.yml      # PostgreSQL + Kafka + Zookeeper para desarrollo local
-├── transaction-service/    # API REST + persistencia + productor/consumer de Kafka
-├── antifraud-service/      # Consumer de transaction.created + regla de fraude + productor de la decisión
-└── e2e-tests/               # Pruebas end-to-end de todo el flujo, contra Kafka real
+├── CONTRACT.md               # Contrato de eventos entre transaction-service y antifraud-service
+├── DECISIONS.md              # Razonamiento detrás de las decisiones técnicas
+├── LIMITATIONS.md            # Inventario honesto de lo que falta o se simplificó
+├── docs/
+│   ├── HIGH_VOLUME.md         # Nota de diseño: alto volumen de lecturas/escrituras
+│   └── WEB_SCRAPING.md        # Nota de diseño: recolección de datos de referencia
+├── docker-compose.yml         # PostgreSQL + Kafka + Zookeeper para desarrollo local
+├── transaction-service/       # API REST + GraphQL + persistencia + outbox + productor/consumer de Kafka
+├── antifraud-service/         # Consumer de transaction.created + regla de fraude + productor de la decisión
+├── reference-data-service/    # (Opcional) Recolección de tasas de cambio de referencia — no toca el flujo de negocio
+└── e2e-tests/                  # Pruebas end-to-end de todo el flujo, contra Kafka real
 ```

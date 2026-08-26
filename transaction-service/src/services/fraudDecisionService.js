@@ -1,4 +1,5 @@
 const prisma = require('../db/prismaClient');
+const metrics = require('../metrics');
 
 const VALID_DECISION_STATUSES = ['approved', 'rejected'];
 
@@ -17,6 +18,7 @@ async function applyFraudDecision({ transactionExternalId, status }) {
   });
 
   if (result.count > 0) {
+    metrics.fraudDecisionsAppliedTotal.inc({ status });
     return { applied: true };
   }
 
@@ -26,9 +28,11 @@ async function applyFraudDecision({ transactionExternalId, status }) {
   });
 
   if (!existing) {
+    metrics.fraudDecisionsIgnoredTotal.inc({ reason: 'not_found' });
     return { applied: false, reason: 'not_found' };
   }
 
+  metrics.fraudDecisionsIgnoredTotal.inc({ reason: 'already_resolved' });
   return { applied: false, reason: 'already_resolved', currentStatus: existing.status };
 }
 

@@ -97,5 +97,6 @@ test('control: un payload válido no responde 400 (confirma que los rechazos ant
 
   assert.equal(res.status, 201);
 
+  await prisma.outboxEvent.deleteMany({ where: { aggregateId: res.body.transactionExternalId } });
   await prisma.transaction.delete({ where: { externalId: res.body.transactionExternalId } });
 });

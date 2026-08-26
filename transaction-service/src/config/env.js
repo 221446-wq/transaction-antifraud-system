@@ -17,6 +17,10 @@ function required(name) {
 const env = {
   port: process.env.PORT || 3000,
   databaseUrl: required('DATABASE_URL'),
+  // Tamaño del pool de conexiones de Postgres (pg.Pool, vía el adapter de
+  // Prisma). Antes no se dimensionaba a propósito (quedaba en el default de
+  // node-postgres); ver docs/HIGH_VOLUME.md.
+  databasePoolMax: Number(process.env.DATABASE_POOL_MAX) || 10,
   kafkaBrokers: required('KAFKA_BROKERS').split(','),
   kafkaClientId: process.env.KAFKA_CLIENT_ID || 'transaction-service',
 };

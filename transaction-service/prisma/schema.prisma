@@ -38,3 +38,24 @@ model Transaction {
 
   @@map("transactions")
 }
+
+// Patrón Outbox: la fila se inserta en la misma transacción de Postgres que
+// el INSERT de negocio (ver transactionService.js), así que "guardado en la
+// base" y "hay un evento pendiente de publicar" quedan atómicos entre sí. Un
+// proceso aparte (outboxRelay.js) es el único que lee esta tabla y publica a
+// Kafka — ver DECISIONS.md.
+model OutboxEvent {
+  id             Int       @id @default(autoincrement())
+  eventId        String    @unique @default(uuid()) @map("event_id") @db.Uuid
+  eventType      String    @map("event_type")
+  aggregateId    String    @map("aggregate_id") @db.Uuid
+  payload        Json
+  createdAt      DateTime  @default(now()) @map("created_at")
+  publishedAt    DateTime? @map("published_at")
+  attempts       Int       @default(0)
+  lastError      String?   @map("last_error")
+  deadLetteredAt DateTime? @map("dead_lettered_at")
+
+  @@index([publishedAt, deadLetteredAt, id])
+  @@map("outbox_events")
+}

@@ -137,14 +137,42 @@ exports.Prisma.TransactionScalarFieldEnum = {
   updatedAt: 'updatedAt'
 };
 
+exports.Prisma.OutboxEventScalarFieldEnum = {
+  id: 'id',
+  eventId: 'eventId',
+  eventType: 'eventType',
+  aggregateId: 'aggregateId',
+  payload: 'payload',
+  createdAt: 'createdAt',
+  publishedAt: 'publishedAt',
+  attempts: 'attempts',
+  lastError: 'lastError',
+  deadLetteredAt: 'deadLetteredAt'
+};
+
 exports.Prisma.SortOrder = {
   asc: 'asc',
   desc: 'desc'
 };
 
+exports.Prisma.JsonNullValueInput = {
+  JsonNull: Prisma.JsonNull
+};
+
 exports.Prisma.QueryMode = {
   default: 'default',
   insensitive: 'insensitive'
+};
+
+exports.Prisma.JsonNullValueFilter = {
+  DbNull: Prisma.DbNull,
+  JsonNull: Prisma.JsonNull,
+  AnyNull: Prisma.AnyNull
+};
+
+exports.Prisma.NullsOrder = {
+  first: 'first',
+  last: 'last'
 };
 exports.TransactionStatus = exports.$Enums.TransactionStatus = {
   pending: 'pending',
@@ -154,7 +182,8 @@ exports.TransactionStatus = exports.$Enums.TransactionStatus = {
 
 exports.Prisma.ModelName = {
   TransactionType: 'TransactionType',
-  Transaction: 'Transaction'
+  Transaction: 'Transaction',
+  OutboxEvent: 'OutboxEvent'
 };
 
 /**

@@ -3,6 +3,7 @@ const kafka = require('./kafkaClient');
 const producer = kafka.producer();
 
 let connectPromise = null;
+let connected = false;
 
 /**
  * Conecta el productor si aún no lo está. Es seguro llamarla en cada publish:
@@ -11,17 +12,27 @@ let connectPromise = null;
  */
 async function ensureConnected() {
   if (!connectPromise) {
-    connectPromise = producer.connect().catch((err) => {
-      connectPromise = null;
-      throw err;
-    });
+    connectPromise = producer.connect()
+      .then(() => {
+        connected = true;
+      })
+      .catch((err) => {
+        connectPromise = null;
+        connected = false;
+        throw err;
+      });
   }
   await connectPromise;
 }
 
 async function disconnect() {
   connectPromise = null;
+  connected = false;
   await producer.disconnect();
 }
 
-module.exports = { producer, ensureConnected, disconnect };
+function isConnected() {
+  return connected;
+}
+
+module.exports = { producer, ensureConnected, disconnect, isConnected };

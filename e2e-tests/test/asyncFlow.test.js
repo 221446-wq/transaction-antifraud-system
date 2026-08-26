@@ -37,6 +37,7 @@ let pgClient;
 
 const receivedCreatedEvents = [];
 const receivedDecisionEvents = [];
+const receivedDlqEvents = [];
 const createdExternalIds = [];
 
 before(async () => {
@@ -52,7 +53,7 @@ before(async () => {
   spyConsumer = kafka.consumer({ groupId: `e2e-spy-${Date.now()}` });
   await spyConsumer.connect();
   await spyConsumer.subscribe({
-    topics: ['transaction.created', 'transaction.fraud-decision'],
+    topics: ['transaction.created', 'transaction.fraud-decision', 'transaction.fraud-decision.dlq'],
     fromBeginning: false,
   });
   spyConsumer.run({
@@ -62,6 +63,8 @@ before(async () => {
         receivedCreatedEvents.push(event);
       } else if (topic === 'transaction.fraud-decision') {
         receivedDecisionEvents.push(event);
+      } else if (topic === 'transaction.fraud-decision.dlq') {
+        receivedDlqEvents.push(event);
       }
     },
   });
@@ -83,6 +86,7 @@ before(async () => {
 
 after(async () => {
   if (createdExternalIds.length > 0 && pgClient) {
+    await pgClient.query('DELETE FROM outbox_events WHERE aggregate_id = ANY($1)', [createdExternalIds]);
     await pgClient.query('DELETE FROM transactions WHERE external_id = ANY($1)', [createdExternalIds]);
   }
   if (pgClient) await pgClient.end();
@@ -194,4 +198,33 @@ test('duplicados: republicar el mismo transaction.fraud-decision no cambia el re
 
   const finalTransaction = await fetchTransaction(transactionExternalId);
   assert.equal(finalTransaction.transactionStatus.name, 'approved');
+});
+
+test('DLQ: un transaction.fraud-decision mal formado se descarta a transaction.fraud-decision.dlq sin tumbar el servicio', async () => {
+  // Un mensaje que no cumple el contrato (falta transactionExternalId) nunca
+  // debería llegar en un sistema sano, pero at-least-once + productores mal
+  // implementados hacen que "puede pasar" — ver CONTRACT.md y
+  // DECISIONS.md, "Observabilidad"/DLQ.
+  const malformedEvent = {
+    eventId: randomUUID(),
+    eventType: 'transaction.fraud-decision',
+    occurredAt: new Date().toISOString(),
+    data: { status: 'approved' }, // sin transactionExternalId
+  };
+
+  await testProducer.send({
+    topic: 'transaction.fraud-decision',
+    messages: [{ key: 'malformed-e2e-test', value: JSON.stringify(malformedEvent) }],
+  });
+
+  const dlqEvent = await waitForCondition(
+    () => receivedDlqEvents.find((e) => e.data.rawValue?.includes(malformedEvent.eventId)),
+    15000,
+  );
+  assert.equal(dlqEvent.data.originalTopic, 'transaction.fraud-decision');
+  assert.equal(dlqEvent.data.reason, 'invalid_event');
+
+  // El servicio sigue vivo y atendiendo requests después de descartar el
+  // mensaje inválido.
+  await waitForHealth(`${TRANSACTION_SERVICE_URL}/health`, 5000);
 });
